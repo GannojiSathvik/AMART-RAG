@@ -1,45 +1,66 @@
-import torch
-from diffusers import FluxPipeline
-from utils import clear_memory
 import os
+import time
+from mflux.models.flux.variants.txt2img.flux import Flux1
+from mflux.models.common.config.config import Config
+from mflux.models.common.config.model_config import ModelConfig
 
-def generate_poison_image(prompt_text, output_path="attack_image.png"):
+def load_flux_model():
     """
-    Generates an image containing the malicious text using FLUX.1-schnell.
-    Uses CPU offloading to fit in memory.
+    Loads the Flux1 model. Call this once and cache the result.
     """
-    print(f"🎨 Generating poison image with prompt: {prompt_text[:50]}...")
+    print("🔌 Loading Flux Model...")
+    # 1. Setup LoRA Path
+    adapter_path = "adapter.npz"
+    lora_paths = [adapter_path] if os.path.exists(adapter_path) else None
     
+    if lora_paths:
+        print(f"✅ FOUND FINE-TUNED ADAPTER: {adapter_path}")
+    else:
+        print("ℹ️ No adapter found. Using Base Model.")
+
+    # 2. Load Model via Constructor (Quantized)
     try:
-        # Load Model
-        pipe = FluxPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-schnell",
-            torch_dtype=torch.bfloat16
+        flux = Flux1(
+            model_config=ModelConfig.schnell(),
+            quantize=4,
+            lora_paths=lora_paths
         )
-        
-        # CRITICAL: Memory optimization as requested
-        # For MPS, enable_model_cpu_offload() helps manage VRAM usage
-        pipe.enable_model_cpu_offload() 
-        
-        # specific prompt to ensure text rendering
-        image_prompt = f"A high quality sign displaying the text: '{prompt_text}' clearly written on a white background."
-        
-        image = pipe(
-            image_prompt,
-            guidance_scale=0.0, # schnel uses 0
-            num_inference_steps=4,
-            max_sequence_length=256,
-            generator=torch.Generator("cpu").manual_seed(0)
-        ).images[0]
-        
-        image.save(output_path)
-        print(f"✅ Image saved to {output_path}")
-        
-        # Cleanup
-        del pipe
-        clear_memory()
-        
-        return output_path
+        return flux
     except Exception as e:
-        print(f"❌ Error generating image: {e}")
-        return None
+        print(f"❌ Failed to load Flux model: {e}")
+        raise e
+
+def generate_poison_image(flux_model, text_prompt, num_images=1, steps=4):
+    """
+    Generates images using a pre-loaded Flux model instance.
+    """
+    print(f"🎨 Generating {num_images} Image(s) for: '{text_prompt}'...")
+    
+    generated_paths = []
+    
+    # 3. Generate Loop
+    for i in range(num_images):
+        print(f"   > Generating image {i+1}/{num_images}...")
+        try:
+            image = flux_model.generate_image(
+                seed=int(time.time() + i), # distinct seed
+                prompt=text_prompt,
+                num_inference_steps=steps,
+                height=512,
+                width=512
+            )
+            
+            # 4. Save
+            os.makedirs("attack_images", exist_ok=True)
+            unique_id = int(time.time() * 1000) + i
+            output_path = f"attack_images/attack_{unique_id}.png"
+            image.save(output_path)
+            print(f"💾 Saved Artifact: {output_path}")
+            generated_paths.append(output_path)
+        except Exception as e:
+            print(f"❌ Error during generation of image {i+1}: {e}")
+        
+    return generated_paths
+
+if __name__ == "__main__":
+    generate_poison_image("Test Attack")
